@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>航海测深图刻度链裁决</title>
+  <style>
+    :root {
+      --ink: #1c2733;
+      --muted: #5b6b7b;
+      --line: #cfd9e2;
+      --paper: #f4f1e9;
+      --navy: #163a5f;
+      --navy-soft: #e4edf5;
+      --red: #a52828;
+      --red-soft: #fbeaea;
+      --green: #1f6b3b;
+      --green-soft: #e8f4ec;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.55;
+    }
+    header {
+      background: var(--navy);
+      color: #fff;
+      padding: 22px 28px;
+    }
+    header h1 { margin: 0; font-size: 20px; letter-spacing: 1px; }
+    header p { margin: 6px 0 0; font-size: 13px; opacity: .82; }
+    main { max-width: 1080px; margin: 0 auto; padding: 24px 28px 60px; }
+    h2 { font-size: 16px; margin: 28px 0 10px; color: var(--navy); }
+    .panel {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .segments { display: grid; gap: 12px; }
+    .segment {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 12px 14px;
+      background: #fbfcfe;
+    }
+    .segment .seg-head {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    }
+    .segment .seg-head strong { color: var(--navy); }
+    .seg-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 3px; }
+    input[type=text], input[type=number] {
+      width: 100%; padding: 7px 9px; font-size: 13px;
+      border: 1px solid var(--line); border-radius: 4px; font-family: inherit;
+    }
+    input:focus { outline: 2px solid var(--navy-soft); border-color: var(--navy); }
+    button {
+      font-family: inherit; font-size: 14px; cursor: pointer;
+      border-radius: 5px; border: 1px solid var(--navy);
+    }
+    .btn-primary {
+      background: var(--navy); color: #fff; padding: 10px 26px;
+    }
+    .btn-primary:disabled { opacity: .5; cursor: wait; }
+    .btn-ghost {
+      background: #fff; color: var(--navy); padding: 6px 12px; font-size: 13px;
+    }
+    .btn-danger {
+      background: #fff; color: var(--red); border-color: var(--red);
+      padding: 4px 10px; font-size: 12px;
+    }
+    .toolbar { display: flex; gap: 12px; align-items: center; margin-top: 14px; }
+    .hint { font-size: 12px; color: var(--muted); }
+    .alert {
+      border-radius: 6px; padding: 12px 14px; font-size: 14px;
+      margin-bottom: 14px; border: 1px solid;
+    }
+    .alert-error { background: var(--red-soft); border-color: var(--red); color: var(--red); }
+    .alert-ok { background: var(--green-soft); border-color: var(--green); color: var(--green); }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td {
+      border: 1px solid var(--line); padding: 6px 10px; text-align: center;
+    }
+    th { background: var(--navy-soft); color: var(--navy); font-weight: 600; }
+    .chain {
+      font-size: 18px; font-weight: 600; color: var(--navy);
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    }
+    .chain .seg-id {
+      background: var(--navy); color: #fff; border-radius: 4px;
+      padding: 2px 12px; font-size: 15px;
+    }
+    .chain .arrow { color: var(--muted); font-weight: 400; }
+    .metrics { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0 4px; }
+    .metric {
+      background: var(--navy-soft); border-radius: 6px; padding: 8px 16px;
+      font-size: 13px; color: var(--navy);
+    }
+    .metric b { font-size: 17px; }
+    .edge-card {
+      border: 1px solid var(--line); border-radius: 6px;
+      padding: 12px 14px; margin-bottom: 12px; background: #fbfcfe;
+    }
+    .edge-card h3 { margin: 0 0 8px; font-size: 14px; color: var(--navy); }
+    .edge-meta { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+    .empty-note { font-size: 13px; color: var(--muted); padding: 4px 0; }
+    details { margin-top: 18px; }
+    summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+    pre {
+      background: #102336; color: #d8e6f2; padding: 14px; border-radius: 6px;
+      font-size: 12px; overflow-x: auto;
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>航海测深图 · 刻度链修复裁决</h1>
+    <p>录入三至六段图纸（每段四至十个严格递增的整数深度刻度及刻线类型），由服务端裁决段落顺序与拼接证据。</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2 style="margin-top:0">图纸录入</h2>
+      <div class="hint" style="margin-bottom:12px">
+        刻度用逗号分隔并按沿纸边顺序严格递增；刻线类型逐个对应，取值：
+        <code>major</code>（长刻线）、<code>minor</code>（短刻线）、<code>reference</code>（基准刻线）。
+      </div>
+      <div id="segments" class="segments"></div>
+      <div class="toolbar">
+        <button type="button" class="btn-ghost" id="add-segment">＋ 添加一段</button>
+        <button type="button" class="btn-primary" id="adjudicate">裁 决</button>
+        <span class="hint" id="seg-count"></span>
+      </div>
+    </section>
+
+    <div id="error-box" class="alert alert-error hidden"></div>
+
+    <section id="result" class="hidden">
+      <div class="alert alert-ok">裁决成功：以下顺序、配对与误差均为服务端业务 API 返回结果。</div>
+
+      <section class="panel">
+        <h2 style="margin-top:0">裁决段落顺序（原航线方向）</h2>
+        <div id="chain" class="chain"></div>
+        <div class="metrics">
+          <div class="metric">边界配对总数 <b id="m-pairs"></b></div>
+          <div class="metric">总拼接误差（|平移量|之和） <b id="m-error"></b></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin-top:0">相邻重叠刻度配对</h2>
+        <div id="edges"></div>
+      </section>
+
+      <section class="panel">
+        <h2 style="margin-top:0">未配对刻度</h2>
+        <div id="unpaired"></div>
+      </section>
+
+      <details>
+        <summary>查看服务端返回的原始 JSON 证据</summary>
+        <pre id="raw-json"></pre>
+      </details>
+    </section>
+  </main>
+
+  <script>
+    const ALLOWED_TYPES = ["major", "minor", "reference"];
+    const MIN_SEGMENTS = 3, MAX_SEGMENTS = 6;
+
+    // 默认示例：四段图纸按打乱顺序录入（3, 1, 4, 2），待服务端裁决原航线顺序。
+    // 真实接缝：段1 刻度10(reference) → 段2 刻度10(reference)；
+    //           段2 刻度30(reference) → 段3 刻度30(reference)；
+    //           段3 刻度50(minor)     → 段4 刻度50(minor)。
+    const EXAMPLE = [
+      { id: 3, marks: "30, 40, 45, 50, 52", types: "reference, reference, reference, minor, reference" },
+      { id: 1, marks: "2, 10, 13, 14",      types: "major, reference, minor, reference" },
+      { id: 4, marks: "50, 51, 53, 69, 78", types: "minor, major, minor, minor, minor" },
+      { id: 2, marks: "10, 11, 20, 25, 30", types: "reference, major, major, major, reference" },
+    ];
+
+    const segmentsEl = document.getElementById("segments");
+    const addBtn = document.getElementById("add-segment");
+    const goBtn = document.getElementById("adjudicate");
+    const countEl = document.getElementById("seg-count");
+    const errorBox = document.getElementById("error-box");
+    const resultEl = document.getElementById("result");
+
+    function renderInputs() {
+      if (!segmentsEl.children.length) {
+        EXAMPLE.forEach(seg => segmentsEl.appendChild(buildSegmentRow(seg)));
+      }
+      const n = segmentsEl.children.length;
+      countEl.textContent = `当前 ${n} 段（允许 ${MIN_SEGMENTS}–${MAX_SEGMENTS} 段）`;
+      addBtn.disabled = n >= MAX_SEGMENTS;
+      [...segmentsEl.querySelectorAll(".btn-danger")].forEach(
+        btn => (btn.disabled = n <= MIN_SEGMENTS)
+      );
+    }
+
+    function buildSegmentRow(seg) {
+      const row = document.createElement("div");
+      row.className = "segment";
+      row.innerHTML = `
+        <div class="seg-head">
+          <strong>段落</strong>
+          <input type="number" class="seg-id" value="${seg.id}" style="width:90px"
+                 aria-label="段落编号" />
+          <button type="button" class="btn-danger remove">移除</button>
+        </div>
+        <div class="seg-grid">
+          <div>
+            <label>刻度（逗号分隔，严格递增）</label>
+            <input type="text" class="seg-marks" value="${seg.marks}" />
+          </div>
+          <div>
+            <label>刻线类型（与刻度逐个对应：major / minor / reference）</label>
+            <input type="text" class="seg-types" value="${seg.types}" />
+          </div>
+        </div>`;
+      row.querySelector(".remove").addEventListener("click", () => {
+        row.remove();
+        renderInputs();
+      });
+      return row;
+    }
+
+    addBtn.addEventListener("click", () => {
+      const nextId = segmentsEl.children.length + 1;
+      segmentsEl.appendChild(
+        buildSegmentRow({ id: nextId, marks: "", types: "" })
+      );
+      renderInputs();
+    });
+
+    function collectPayload() {
+      const rows = [...segmentsEl.querySelectorAll(".segment")];
+      return {
+        segments: rows.map(row => ({
+          id: Number(row.querySelector(".seg-id").value),
+          marks: row.querySelector(".seg-marks").value
+            .split(",").map(s => s.trim()).filter(s => s !== "").map(Number),
+          types: row.querySelector(".seg-types").value
+            .split(",").map(s => s.trim()).filter(s => s !== ""),
+        })),
+      };
+    }
+
+    function showError(message) {
+      // 任一边界无合法配对或输入不合法：清除旧方案并显示首个原因。
+      resultEl.classList.add("hidden");
+      errorBox.classList.remove("hidden");
+      errorBox.textContent = "裁决失败：" + message;
+    }
+
+    function clearNotice() {
+      errorBox.classList.add("hidden");
+      errorBox.textContent = "";
+    }
+
+    function renderResult(data) {
+      const r = data.result;
+      clearNotice();
+      resultEl.classList.remove("hidden");
+
+      const chain = document.getElementById("chain");
+      chain.innerHTML = "";
+      r.order.forEach((segId, i) => {
+        if (i > 0) {
+          const arrow = document.createElement("span");
+          arrow.className = "arrow";
+          arrow.textContent = "──→";
+          chain.appendChild(arrow);
+        }
+        const chip = document.createElement("span");
+        chip.className = "seg-id";
+        chip.textContent = "段 " + segId;
+        chain.appendChild(chip);
+      });
+
+      document.getElementById("m-pairs").textContent = r.total_pairs;
+      document.getElementById("m-error").textContent = r.total_error;
+
+      const edgesEl = document.getElementById("edges");
+      edgesEl.innerHTML = "";
+      r.edges.forEach(edge => {
+        const card = document.createElement("div");
+        card.className = "edge-card";
+        const rows = edge.pairs.map(p => `
+          <tr>
+            <td>${p.left_position}</td>
+            <td>${p.mark}</td>
+            <td>${p.type}</td>
+            <td>${p.aligned_mark}</td>
+            <td>${p.right_position}</td>
+          </tr>`).join("");
+        card.innerHTML = `
+          <h3>边界：段 ${edge.left_id} → 段 ${edge.right_id}</h3>
+          <div class="edge-meta">
+            一致平移量 = <b>${edge.shift >= 0 ? "+" : ""}${edge.shift}</b>
+            （右段刻度 − 左段刻度）· 配对 ${edge.pair_count} 对 ·
+            该边界拼接误差 |shift| = ${edge.error}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>左段位置</th><th>左段刻度</th><th>刻线类型</th>
+                <th>对齐后刻度</th><th>右段位置</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+        edgesEl.appendChild(card);
+      });
+
+      const unpairedEl = document.getElementById("unpaired");
+      if (r.unpaired.length === 0) {
+        unpairedEl.innerHTML = '<div class="empty-note">所有刻度均已参与配对，没有未配对刻度。</div>';
+      } else {
+        const rows = r.unpaired.map(u => `
+          <tr>
+            <td>段 ${u.segment_id}</td><td>${u.position}</td>
+            <td>${u.mark}</td><td>${u.type}</td>
+          </tr>`).join("");
+        unpairedEl.innerHTML = `
+          <table>
+            <thead>
+              <tr><th>所属段落</th><th>段内位置</th><th>刻度</th><th>刻线类型</th></tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      }
+
+      // 原始证据：直接呈现真实业务 API 返回内容。
+      document.getElementById("raw-json").textContent = JSON.stringify(data, null, 2);
+    }
+
+    goBtn.addEventListener("click", async () => {
+      clearNotice();
+      goBtn.disabled = true;
+      try {
+        const resp = await fetch("/api/adjudicate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(collectPayload()),
+        });
+        const data = await resp.json();
+        if (resp.ok && data.ok) {
+          renderResult(data);
+        } else {
+          showError((data.error && data.error.message) || `服务端返回 ${resp.status}`);
+        }
+      } catch (err) {
+        showError("无法连接裁决服务：" + err.message);
+      } finally {
+        goBtn.disabled = false;
+      }
+    });
+
+    renderInputs();
+  </script>
+</body>
+</html>

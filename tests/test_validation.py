@@ -20,9 +20,10 @@ def valid_payload(**overrides):
 
 
 def test_valid_payload_accepted() -> None:
-    segments = validate_payload(valid_payload())
+    segments, anchors = validate_payload(valid_payload())
     assert [s.id for s in segments] == [1, 2, 3]
     assert segments[0].marks == (1, 2, 3, 4)
+    assert anchors == []
 
 
 def test_top_level_must_be_object() -> None:
@@ -83,8 +84,9 @@ def test_negative_ids_allowed() -> None:
     payload = valid_payload()
     for i, seg in enumerate(payload["segments"]):
         seg["id"] = -(i + 1)
-    segments = validate_payload(payload)
+    segments, anchors = validate_payload(payload)
     assert [s.id for s in segments] == [-1, -2, -3]
+    assert anchors == []
 
 
 @pytest.mark.parametrize("count", [0, 1, 2, 3])
@@ -158,3 +160,129 @@ def test_first_reason_reported_in_entry_order() -> None:
     with pytest.raises(ValidationFailure) as exc_info:
         validate_payload(payload)
     assert "编号 1 重复" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# 定位锚点校验
+# ---------------------------------------------------------------------------
+
+
+def anchor_payload(anchors):
+    payload = valid_payload()
+    payload["anchors"] = anchors
+    return payload
+
+
+def test_no_anchors_field_returns_empty() -> None:
+    _, anchors = validate_payload(valid_payload())
+    assert anchors == []
+
+
+def test_empty_anchor_list_treated_as_omitted() -> None:
+    _, anchors = validate_payload(anchor_payload([]))
+    assert anchors == []
+
+
+@pytest.mark.parametrize("count", [1])
+def test_too_few_anchors(count: int) -> None:
+    payload = anchor_payload([
+        {"segment_id": 1, "position": 0, "archived_depth": 5}
+        for _ in range(count)
+    ])
+    with pytest.raises(ValidationFailure, match="至少需要 2 个"):
+        validate_payload(payload)
+
+
+def test_too_many_anchors() -> None:
+    payload = valid_payload()
+    # 三段各 4 刻度，合法引用不超过 12 个，构造 5 个互不相同引用
+    payload["anchors"] = [
+        {"segment_id": 1, "position": 0, "archived_depth": 0},
+        {"segment_id": 1, "position": 1, "archived_depth": 0},
+        {"segment_id": 1, "position": 2, "archived_depth": 0},
+        {"segment_id": 1, "position": 3, "archived_depth": 0},
+        {"segment_id": 2, "position": 0, "archived_depth": 0},
+    ]
+    with pytest.raises(ValidationFailure, match="最多允许 4 个"):
+        validate_payload(payload)
+
+
+def test_anchors_must_be_array() -> None:
+    with pytest.raises(ValidationFailure, match="定位锚点数组"):
+        validate_payload(anchor_payload({"segment_id": 1}))
+
+
+def test_anchor_referencing_missing_segment() -> None:
+    payload = anchor_payload([
+        {"segment_id": 99, "position": 0, "archived_depth": 1},
+        {"segment_id": 1, "position": 0, "archived_depth": 1},
+    ])
+    with pytest.raises(ValidationFailure, match="不存在的段 99"):
+        validate_payload(payload)
+
+
+def test_anchor_bad_position() -> None:
+    payload = anchor_payload([
+        {"segment_id": 1, "position": 4, "archived_depth": 1},  # 只有位置 0-3
+        {"segment_id": 2, "position": 0, "archived_depth": 1},
+    ])
+    with pytest.raises(ValidationFailure, match="刻度位置 4 不存在"):
+        validate_payload(payload)
+
+
+def test_anchor_negative_position() -> None:
+    payload = anchor_payload([
+        {"segment_id": 1, "position": -1, "archived_depth": 1},
+        {"segment_id": 2, "position": 0, "archived_depth": 1},
+    ])
+    with pytest.raises(ValidationFailure, match="刻度位置 -1 不存在"):
+        validate_payload(payload)
+
+
+def test_anchor_duplicate_same_mark_rejected() -> None:
+    payload = anchor_payload([
+        {"segment_id": 1, "position": 2, "archived_depth": 3},
+        {"segment_id": 1, "position": 2, "archived_depth": 9},  # 重复引用同一刻度
+        {"segment_id": 2, "position": 0, "archived_depth": 4},
+    ])
+    with pytest.raises(ValidationFailure, match="重复引用段 1 的同一刻度位置 2"):
+        validate_payload(payload)
+
+
+def test_anchors_must_cover_two_segments() -> None:
+    payload = anchor_payload([
+        {"segment_id": 1, "position": 0, "archived_depth": 1},
+        {"segment_id": 1, "position": 1, "archived_depth": 2},
+    ])
+    with pytest.raises(ValidationFailure, match="覆盖至少两段"):
+        validate_payload(payload)
+
+
+def test_anchor_missing_fields_first_reason() -> None:
+    payload = anchor_payload([
+        {"position": 0, "archived_depth": 1},
+        {"segment_id": 2, "position": 0, "archived_depth": 1},
+    ])
+    with pytest.raises(ValidationFailure, match="缺少段落编号 segment_id"):
+        validate_payload(payload)
+
+
+def test_anchor_non_integer_depth_rejected() -> None:
+    payload = anchor_payload([
+        {"segment_id": 1, "position": 0, "archived_depth": 3.5},
+        {"segment_id": 2, "position": 0, "archived_depth": 1},
+    ])
+    with pytest.raises(ValidationFailure, match="档案原始水深 archived_depth 必须是整数"):
+        validate_payload(payload)
+
+
+def test_valid_anchors_parsed_in_order() -> None:
+    payload = anchor_payload([
+        {"segment_id": 3, "position": 2, "archived_depth": -7},
+        {"segment_id": 1, "position": 0, "archived_depth": 0},
+    ])
+    _, anchors = validate_payload(payload)
+    assert [(a.index, a.segment_id, a.position, a.archived_depth) for a in anchors] == [
+        (0, 3, 2, -7),
+        (1, 1, 0, 0),
+    ]

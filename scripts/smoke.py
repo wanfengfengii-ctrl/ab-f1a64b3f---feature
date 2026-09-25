@@ -155,6 +155,85 @@ def check_no_valid_chain() -> None:
     print(f"[ok] POST /api/adjudicate（无合法链）-> {status} {body['error']['message']}")
 
 
+def check_anchored_success() -> None:
+    # 等间距同构段：顺序 1→2→3，接缝 shift 各为 3，段偏移 0,-3,-6。
+    # 锚点：段1 刻度1→档案水深1；段3 刻度10→档案水深4（10 + (-6) = 4）。
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 1, "position": 0, "archived_depth": 1},
+            {"segment_id": 3, "position": 3, "archived_depth": 4},
+        ],
+    }
+    status, body = request("POST", "/api/adjudicate", payload)
+    assert_true(status == 200, f"锚定裁决成功路径应为 200，实际 {status}：{body}")
+    result = body["result"]
+    assert_true(result["anchor_constrained"] is True, "应标记为锚定裁决")
+    assert_true(result["order"] == [1, 2, 3], f"顺序异常：{result['order']}")
+
+    offsets = {o["segment_id"]: o["offset"] for o in result["segment_offsets"]}
+    assert_true([o["segment_id"] for o in result["segment_offsets"]] == result["order"],
+                "偏移必须按链顺序逐段给出")
+    # offset_右 = offset_左 − shift
+    for edge in result["edges"]:
+        assert_true(
+            offsets[edge["right_id"]] == offsets[edge["left_id"]] - edge["shift"],
+            f"段偏移与接缝平移量不一致：{edge}",
+        )
+    assert_true(offsets == {1: 0, 2: -3, 3: -6}, f"偏移异常：{offsets}")
+
+    assert_true(len(result["anchors"]) == 2, "应返回两个锚点的逐点换算")
+    for item in result["anchors"]:
+        assert_true(item["global_depth"] == item["mark"] + item["offset"],
+                    f"换算全局水深与刻度+偏移不一致：{item}")
+        assert_true(item["global_depth"] == item["archived_depth"],
+                    f"锚点换算值必须与档案水深精确一致：{item}")
+        assert_true(item["matches_archive"] is True, "matches_archive 应为 true")
+    print(f"[ok] POST /api/adjudicate（锚定裁决成功）-> 顺序 {result['order']}，"
+          f"偏移 {result['segment_offsets']}，两锚点均精确一致")
+
+
+def check_anchored_conflict() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 1, "position": 0, "archived_depth": 1},
+            {"segment_id": 3, "position": 3, "archived_depth": 999},
+        ],
+    }
+    status, body = request("POST", "/api/adjudicate", payload)
+    assert_true(status == 422, f"锚点矛盾应返回 422，实际 {status}")
+    assert_true(body["error"]["code"] == "anchor_conflict", f"错误码异常：{body}")
+    assert_true("首个阻断锚点" in body["error"]["message"], f"原因应指认首个阻断锚点：{body}")
+    print(f"[ok] POST /api/adjudicate（锚点矛盾）-> {status} {body['error']['message'][:40]}...")
+
+
+def check_anchor_bad_reference() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 42, "position": 0, "archived_depth": 1},
+            {"segment_id": 1, "position": 0, "archived_depth": 1},
+        ],
+    }
+    status, body = request("POST", "/api/adjudicate", payload)
+    assert_true(status == 400, f"锚点引用不存在的段应返回 400，实际 {status}")
+    assert_true("不存在的段 42" in body["error"]["message"], f"首个原因异常：{body}")
+    print(f"[ok] POST /api/adjudicate（锚点非法引用）-> {status} {body['error']['message']}")
+
+
 def main() -> int:
     print(f"对 {BASE_URL} 执行 API 冒烟 ...")
     try:
@@ -163,6 +242,9 @@ def main() -> int:
         check_success()
         check_invalid_input()
         check_no_valid_chain()
+        check_anchored_success()
+        check_anchored_conflict()
+        check_anchor_bad_reference()
     except Exception as exc:  # noqa: BLE001
         print(f"[FAIL] 冒烟失败：{exc}", file=sys.stderr)
         return 1

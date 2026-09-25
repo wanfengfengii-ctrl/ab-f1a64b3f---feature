@@ -118,3 +118,69 @@ def test_each_segment_used_exactly_once_in_response() -> None:
         result["edges"][-1]["right_id"]
     ]
     assert edge_endpoints == chain
+
+
+# ---------------------------------------------------------------------------
+# 定位锚点（锚定裁决）
+# ---------------------------------------------------------------------------
+
+
+def test_response_carries_offsets_and_anchor_fields_in_legacy_mode() -> None:
+    result = client.post("/api/adjudicate", json=valid_payload()).json()["result"]
+    assert result["anchor_constrained"] is False
+    assert result["anchors"] == []
+    # 普通裁决也返回各段偏移，且与接缝 shift 满足 offset_右 = offset_左 − shift
+    offsets = {item["segment_id"]: item["offset"] for item in result["segment_offsets"]}
+    assert [item["segment_id"] for item in result["segment_offsets"]] == result["order"]
+    assert offsets[result["order"][0]] == 0
+    for edge in result["edges"]:
+        assert offsets[edge["right_id"]] == offsets[edge["left_id"]] - edge["shift"]
+
+
+def test_anchored_adjudication_success_and_exact_conversions() -> None:
+    # 等间距同构段：段1->段2->段3 shift 各为 3，偏移 0,-3,-6。
+    # 锚点：段1 刻度1→水深1；段3 刻度10→水深4（10-6=4）。
+    payload = valid_payload()
+    payload["anchors"] = [
+        {"segment_id": 1, "position": 0, "archived_depth": 1},
+        {"segment_id": 3, "position": 3, "archived_depth": 4},
+    ]
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result["anchor_constrained"] is True
+    assert result["order"] == [1, 2, 3]
+    for item in result["anchors"]:
+        assert item["global_depth"] == item["archived_depth"]
+        assert item["global_depth"] == item["mark"] + item["offset"]
+        assert item["matches_archive"] is True
+    offsets = {item["segment_id"]: item["offset"] for item in result["segment_offsets"]}
+    assert offsets == {1: 0, 2: -3, 3: -6}
+
+
+def test_anchored_adjudication_conflict_returns_422() -> None:
+    payload = valid_payload()
+    payload["anchors"] = [
+        {"segment_id": 1, "position": 0, "archived_depth": 1},
+        {"segment_id": 3, "position": 3, "archived_depth": 999},  # 不可达
+    ]
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "anchor_conflict"
+    assert "首个阻断锚点" in body["error"]["message"]
+    assert "第 2 个锚点" in body["error"]["message"]
+
+
+def test_anchor_bad_reference_returns_400_first_reason() -> None:
+    payload = valid_payload()
+    payload["anchors"] = [
+        {"segment_id": 42, "position": 0, "archived_depth": 1},
+        {"segment_id": 1, "position": 0, "archived_depth": 1},
+    ]
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_input"
+    assert "不存在的段 42" in body["error"]["message"]

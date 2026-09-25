@@ -118,3 +118,153 @@ def test_each_segment_used_exactly_once_in_response() -> None:
         result["edges"][-1]["right_id"]
     ]
     assert edge_endpoints == chain
+
+
+def test_unanchored_response_includes_offsets_and_empty_anchors() -> None:
+    result = client.post("/api/adjudicate", json=valid_payload()).json()["result"]
+    # 无锚点：全局基准为链首段（偏移 0），anchor 证据为空数组。
+    assert [o["segment_id"] for o in result["offsets"]] == [1, 2, 3]
+    assert [o["offset"] for o in result["offsets"]] == [0, -3, -6]
+    assert result["anchors"] == []
+
+
+def test_anchored_success_shape_and_exact_depths() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        # shift 各 3：段1@0 全局100（偏移99），段3@3(mark10) 全局103（偏移93）。
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 3, "position": 3, "depth": 103},
+        ],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert result["order"] == [1, 2, 3]
+    assert {o["segment_id"]: o["offset"] for o in result["offsets"]} == {
+        1: 99,
+        2: 96,
+        3: 93,
+    }
+    assert len(result["anchors"]) == 2
+    for anchor in result["anchors"]:
+        assert {
+            "segment_id", "position", "mark", "archive_depth", "global_depth",
+        } <= anchor.keys()
+        assert anchor["global_depth"] == anchor["archive_depth"]
+    first, second = result["anchors"]
+    assert (first["segment_id"], first["mark"], first["global_depth"]) == (1, 1, 100)
+    assert (second["segment_id"], second["mark"], second["global_depth"]) == (3, 10, 103)
+    # 偏移与边界平移量一致
+    offsets = {o["segment_id"]: o["offset"] for o in result["offsets"]}
+    for edge in result["edges"]:
+        assert offsets[edge["right_id"]] == offsets[edge["left_id"]] - edge["shift"]
+
+
+def test_anchor_nonexistent_segment_returns_400() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 9, "position": 0, "depth": 100},
+            {"segment_id": 1, "position": 0, "depth": 100},
+        ],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["error"]["code"] == "invalid_input"
+    assert "9" in body["error"]["message"] and "不存在" in body["error"]["message"]
+
+
+def test_anchor_bad_position_returns_400() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 2, "position": 9, "depth": 100},
+        ],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 400
+    assert "位置 9" in resp.json()["error"]["message"]
+
+
+def test_anchor_duplicate_reference_returns_400() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 1, "position": 0, "depth": 101},
+        ],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 400
+    assert "重复引用" in resp.json()["error"]["message"]
+
+
+def test_too_few_anchors_returns_400() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [{"segment_id": 1, "position": 0, "depth": 100}],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 400
+    assert "至少需要 2 个" in resp.json()["error"]["message"]
+
+
+def test_anchors_single_segment_returns_400() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 1, "position": 1, "depth": 101},
+        ],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 400
+    assert "至少需要覆盖两段" in resp.json()["error"]["message"]
+
+
+def test_contradictory_anchors_return_422_with_first_blocker() -> None:
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        # 需要接缝平移和 13，超出可达范围，锚点 2 阻断。
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 3, "position": 3, "depth": 96},
+        ],
+    }
+    resp = client.post("/api/adjudicate", json=payload)
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["error"]["code"] == "anchors_unsatisfiable"
+    assert "锚点 2" in body["error"]["message"]

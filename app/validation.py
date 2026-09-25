@@ -5,11 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from .solver import (
+    MAX_ANCHORS,
     MAX_MARKS_PER_SEGMENT,
     MAX_SEGMENTS,
+    MIN_ANCHORS,
     MIN_MARKS_PER_SEGMENT,
     MIN_SEGMENTS,
     MARK_TYPES,
+    Anchor,
     Segment,
 )
 
@@ -122,3 +125,94 @@ def validate_payload(payload: Any) -> list[Segment]:
         )
 
     return segments
+
+
+def validate_anchors(payload: Any, segments: list[Segment]) -> list[Anchor]:
+    """校验可选的 ``anchors`` 字段并返回锚点列表（无锚点返回 ``[]``）。
+
+    只在段落校验通过后调用：2–4 个锚点，覆盖至少两段；锚点引用的段与
+    0 基刻度位置必须存在，档案水深为整数；同一锚点引用（段 + 刻度位置）
+    不得重复。按录入顺序报告首个原因。锚点之间的语义矛盾属于裁决阶段错误，
+    不在此拦截。
+    """
+
+    if "anchors" not in payload:
+        return []
+
+    raw_anchors = payload["anchors"]
+    if raw_anchors is None:
+        return []
+    if not isinstance(raw_anchors, list):
+        raise ValidationFailure("anchors 必须是定位锚点数组")
+
+    count = len(raw_anchors)
+    if count < MIN_ANCHORS:
+        raise ValidationFailure(
+            f"定位锚点为 {count} 个，至少需要 {MIN_ANCHORS} 个"
+        )
+    if count > MAX_ANCHORS:
+        raise ValidationFailure(
+            f"定位锚点为 {count} 个，最多允许 {MAX_ANCHORS} 个"
+        )
+
+    segment_by_id = {segment.id: segment for segment in segments}
+    mark_count_by_id = {sid: len(segment.marks) for sid, segment in segment_by_id.items()}
+    seen_references: set[tuple[int, int]] = set()
+    referenced_segments: set[int] = set()
+
+    anchors: list[Anchor] = []
+    for ordinal, raw in enumerate(raw_anchors, start=1):
+        where = f"第 {ordinal} 个定位锚点（录入顺序）"
+
+        if not isinstance(raw, dict):
+            raise ValidationFailure(f"{where}：锚点必须是对象")
+
+        if "segment_id" not in raw:
+            raise ValidationFailure(f"{where}：缺少段落引用 segment_id")
+        segment_id = raw["segment_id"]
+        if not _is_real_int(segment_id):
+            raise ValidationFailure(f"{where}：段落引用 segment_id 必须是整数")
+        if segment_id not in segment_by_id:
+            raise ValidationFailure(
+                f"{where}：引用的段落编号 {segment_id} 不存在"
+            )
+
+        if "position" not in raw:
+            raise ValidationFailure(f"{where}：缺少该段刻度位置 position")
+        position = raw["position"]
+        if not _is_real_int(position):
+            raise ValidationFailure(f"{where}：刻度位置 position 必须是整数（0 基）")
+        if position < 0 or position >= mark_count_by_id[segment_id]:
+            raise ValidationFailure(
+                f"{where}：段 {segment_id} 没有位置 {position}，"
+                f"该段只有 {mark_count_by_id[segment_id]} 个刻度"
+                f"（位置 0–{mark_count_by_id[segment_id] - 1}）"
+            )
+
+        if "depth" not in raw:
+            raise ValidationFailure(f"{where}：缺少档案原始水深 depth")
+        depth = raw["depth"]
+        if not _is_real_int(depth):
+            raise ValidationFailure(
+                f"{where}：档案原始水深 depth 必须是整数"
+            )
+
+        reference = (segment_id, position)
+        if reference in seen_references:
+            raise ValidationFailure(
+                f"{where}：重复引用段 {segment_id} 位置 {position} 的同一刻度，"
+                f"同一锚点刻度只能录入一次"
+            )
+        seen_references.add(reference)
+        referenced_segments.add(segment_id)
+
+        anchors.append(
+            Anchor(segment_id=segment_id, position=position, depth=depth)
+        )
+
+    if len(referenced_segments) < 2:
+        raise ValidationFailure(
+            f"定位锚点只覆盖了 {len(referenced_segments)} 段，至少需要覆盖两段"
+        )
+
+    return anchors

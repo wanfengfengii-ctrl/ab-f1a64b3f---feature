@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .solver import AdjudicationError, adjudicate
-from .validation import ValidationFailure, validate_payload
+from .validation import ValidationFailure, validate_anchors, validate_payload
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -42,8 +42,10 @@ def index() -> FileResponse:
 async def adjudicate_endpoint(request: Request) -> JSONResponse:
     """对录入段落进行裁决。
 
-    成功返回段落顺序、相邻边界配对、未配对刻度与总拼接误差；
-    输入不合法或无合法链时返回错误对象，页面据此清除旧方案并展示首个原因。
+    成功返回段落顺序、各段相对全局基准的偏移、相邻边界配对、未配对刻度与
+    总拼接误差；提供定位锚点时额外返回逐锚点的全局水深换算证据。
+    输入不合法或无合法链（含锚点矛盾/阻断）时返回错误对象，页面据此清除
+    旧方案并展示首个原因。
     """
 
     try:
@@ -53,7 +55,8 @@ async def adjudicate_endpoint(request: Request) -> JSONResponse:
 
     try:
         segments = validate_payload(payload)
-        result = adjudicate(segments)
+        anchors = validate_anchors(payload, segments)
+        result = adjudicate(segments, anchors)
     except ValidationFailure as exc:
         return _error_response(400, str(exc), "invalid_input")
     except AdjudicationError as exc:
@@ -65,6 +68,10 @@ async def adjudicate_endpoint(request: Request) -> JSONResponse:
 def _serialize(result) -> dict:
     return {
         "order": list(result.order),
+        "offsets": [
+            {"segment_id": item.segment_id, "offset": item.offset}
+            for item in result.offsets
+        ],
         "edges": [
             {
                 "left_id": edge.left_id,
@@ -93,6 +100,16 @@ def _serialize(result) -> dict:
                 "type": item.mark_type,
             }
             for item in result.unpaired
+        ],
+        "anchors": [
+            {
+                "segment_id": item.segment_id,
+                "position": item.position,
+                "mark": item.mark,
+                "archive_depth": item.archive_depth,
+                "global_depth": item.global_depth,
+            }
+            for item in result.anchors
         ],
         "total_pairs": result.total_pairs,
         "total_error": result.total_error,

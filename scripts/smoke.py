@@ -125,6 +125,121 @@ def check_success() -> None:
           f"{total_pairs} 对配对，总误差 {total_error}")
 
 
+def check_anchored_success() -> None:
+    # 带定位锚点的裁决：锚点要求两段接缝平移之和为 5（联合择优，不能逐接缝贪心）。
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        # 段1@0(mark1) 全局 100；段3@3(mark10) 全局 104 ⇒ 接缝平移之和为 5。
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 3, "position": 3, "depth": 104},
+        ],
+    }
+    status, body = request("POST", "/api/adjudicate", payload)
+    assert_true(status == 200, f"锚定裁决成功路径应为 200，实际 {status}：{body}")
+    result = body["result"]
+
+    # 每段恰用一次；偏移随顺序给出
+    assert_true(sorted(result["order"]) == [1, 2, 3], "锚定裁决顺序必须使用全部段")
+    assert_true(len(result["offsets"]) == 3, "必须返回每段相对全局基准的偏移")
+    offsets = {o["segment_id"]: o["offset"] for o in result["offsets"]}
+
+    # 独立复核：每条接缝类型一致、平移量一致，且偏移 = 左段偏移 − shift
+    segments = {s["id"]: s for s in payload["segments"]}
+    for edge in result["edges"]:
+        assert_true(
+            offsets[edge["right_id"]] == offsets[edge["left_id"]] - edge["shift"],
+            f"偏移与接缝平移不一致：{edge}",
+        )
+        shifts = set()
+        for pair in edge["pairs"]:
+            left = segments[edge["left_id"]]
+            right = segments[edge["right_id"]]
+            assert_true(
+                left["types"][pair["left_position"]]
+                == right["types"][pair["right_position"]]
+                == pair["type"],
+                "锚定裁决配对刻线类型不一致",
+            )
+            shifts.add(
+                right["marks"][pair["right_position"]]
+                - left["marks"][pair["left_position"]]
+            )
+        assert_true(shifts == {edge["shift"]}, "锚定裁决边界平移量不一致")
+
+    # 逐锚点换算值必须与档案原始水深精确一致
+    assert_true(len(result["anchors"]) == 2, "必须返回逐锚点换算证据")
+    for anchor in result["anchors"]:
+        assert_true(
+            anchor["global_depth"] == anchor["archive_depth"],
+            f"锚点换算水深 {anchor['global_depth']} 与档案值 "
+            f"{anchor['archive_depth']} 不精确一致",
+        )
+
+    print(
+        f"[ok] POST /api/adjudicate（定位锚点）-> 顺序 {result['order']}，"
+        f"接缝 {[e['shift'] for e in result['edges']]}，"
+        f"{sum(1 for a in result['anchors'] if a['global_depth'] == a['archive_depth'])}"
+        f" 个锚点全部精确一致"
+    )
+
+
+def check_anchored_invalid_input() -> None:
+    # 锚点引用不存在的段：400 + 首个原因。
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 9, "position": 0, "depth": 100},
+            {"segment_id": 1, "position": 0, "depth": 100},
+        ],
+    }
+    status, body = request("POST", "/api/adjudicate", payload)
+    assert_true(status == 400, f"非法锚点应返回 400，实际 {status}")
+    assert_true(
+        body["ok"] is False and "不存在" in body["error"]["message"],
+        f"错误原因不正确：{body}",
+    )
+    print(
+        f"[ok] POST /api/adjudicate（非法锚点）-> {status} "
+        f"{body['error']['message']}"
+    )
+
+
+def check_anchors_unsatisfiable() -> None:
+    # 接缝平移之和需要 13（超出可达 0..6），锚点互相矛盾：422 + 首个阻断锚点。
+    payload = {
+        "segments": [
+            {"id": 1, "marks": [1, 2, 3, 4], "types": ["major"] * 4},
+            {"id": 2, "marks": [4, 5, 6, 7], "types": ["major"] * 4},
+            {"id": 3, "marks": [7, 8, 9, 10], "types": ["major"] * 4},
+        ],
+        "anchors": [
+            {"segment_id": 1, "position": 0, "depth": 100},
+            {"segment_id": 3, "position": 3, "depth": 96},
+        ],
+    }
+    status, body = request("POST", "/api/adjudicate", payload)
+    assert_true(status == 422, f"锚点矛盾应返回 422，实际 {status}")
+    assert_true(
+        body["ok"] is False
+        and body["error"]["code"] == "anchors_unsatisfiable"
+        and "锚点 2" in body["error"]["message"],
+        f"错误对象不正确：{body}",
+    )
+    print(
+        f"[ok] POST /api/adjudicate（锚点阻断）-> {status} "
+        f"{body['error']['message']}"
+    )
+
+
 def check_invalid_input() -> None:
     payload = {
         "segments": [
@@ -161,6 +276,9 @@ def main() -> int:
         check_health()
         check_index()
         check_success()
+        check_anchored_success()
+        check_anchored_invalid_input()
+        check_anchors_unsatisfiable()
         check_invalid_input()
         check_no_valid_chain()
     except Exception as exc:  # noqa: BLE001
